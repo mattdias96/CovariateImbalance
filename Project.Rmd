@@ -1,0 +1,581 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+#Install packages
+if(!require(optmatch)){
+  install.packages("optmatch")
+}
+if(!require(RItools)){
+  install.packages("RItools")
+}
+if(!require(tidyverse)){
+  install.packages("tidyverse")
+}
+if(!require(pROC)){
+  install.packages("pROC")
+}
+if(!require(DOS2)){
+  install.packages("DOS2")
+}
+if(!require(rstatix)){
+  install.packages("rstatix")
+}
+if(!require(ggpubr)){
+  install.packages("ggpubr")
+}
+if(!require(GenAlgo)){
+  install.packages("GenAlgo")
+}
+# Load packages
+library(tidyverse)
+library(optmatch)
+library(RItools)
+library(dplyr)
+library(ggplot2)
+library(GenAlgo)
+#source('utility.R')
+```
+
+```{r}
+# Open data - PULL DATA AGAIN
+df_us <- read.csv('full_orb_us.csv')
+df_uk <- read.csv('full_orb_uk.csv')
+
+# Relevant variables
+final_covariates <- c(
+  'Age',
+  'Gender', 
+  'Education', 
+  'Employment', 
+  'Religion', 
+  'Political', 
+  'Ethnicity', 
+  'Income',
+  'know.anyone.covid',
+  'Shielding',
+  'bad_covid_knowledge',
+  'bad_covid_vax_trust',
+  'bad_general_vax_trust',
+  'covid_disrupt'
+)
+```
+
+```{r}
+
+# US
+df_us_cleaned <- df_us %>%
+  mutate(
+    z = Treatment,
+    inv_z = 1 - Treatment,
+
+    # Pre-Treatment Covariates
+    Shielding = ifelse(Shielding == 2, 0, 1),
+    know.anyone.covid = (1 - Know.anyone.Nobody),
+
+    # Derived Personas
+
+    ## Bad Covid Knowledge
+    ## only including these 5 which should be broadly known. Other 2 may not be well known.
+    covid_knowledge_avg = (
+      (COVID.19.Knowledge.Washing.hands) +
+      (COVID.19.Knowledge.Staying.indoors.for.Self) +
+      (COVID.19.Knowledge.Staying.indoors.for.Others) +
+      (COVID.19.Knowledge.Spread.before.symptoms) +
+      (COVID.19.Knowledge.Wearing.masks)
+    )/5,
+    bad_covid_knowledge = ifelse(covid_knowledge_avg < 0, 1, 0),
+    
+    ## Distrust of Covid Vax
+    ## flip these two since their wording is opposite (agree is bad)
+    COVID.19.VCI.COVID.19.Vax.Compatibility = COVID.19.VCI.COVID.19.Vax.Compatibility * -1,
+    COVID.19.VCI.Contract.via.COVID.19.Vax = COVID.19.VCI.Contract.via.COVID.19.Vax *
+      -1,
+    covid_vax_trust_avg = (
+      COVID.19.VCI.COVID.19.Vax.Importance +
+        COVID.19.VCI.COVID.19.Vax.Safety +
+        COVID.19.VCI.COVID.19.Vax.Efficacy +
+        COVID.19.VCI.COVID.19.Vax.benefits.outweigh.risks +
+        COVID.19.VCI.COVID.19.Vax.Compatibility +
+        COVID.19.VCI.Contract.via.COVID.19.Vax
+    ) / 6,
+    bad_covid_vax_trust = ifelse(covid_vax_trust_avg < 0, 1, 0),
+    
+    ## Distrust of General Vax
+    general_vax_trust_avg = (
+      General.VCI.Vax.Importance +
+        General.VCI.Vax.Safety +
+        General.VCI.Vax.Efficacy +
+        General.VCI.Vax.Compatibility
+    ) / 4,
+    bad_general_vax_trust = ifelse(general_vax_trust_avg < 0, 1, 0), 
+
+    # note this is post-treatment, but should technically be ok
+    # since should not have been affected by treatment
+    covid_disrupt = ifelse((
+      COVID.19.Impact.Mental.health +
+        COVID.19.Impact.Financial.stability +
+        COVID.19.Impact.Daily.disruption +
+        COVID.19.Impact.Social.disruption
+    ) / 4 > 0,
+    1,
+    0
+    ), 
+
+    # Processed Questions
+    ## Make questions -1, 0, 1 for more samples per bucket
+    COVID.19.Knowledge.Washing.hands.tri = ifelse(COVID.19.Knowledge.Washing.hands == 0, 0, ifelse(COVID.19.Knowledge.Washing.hands < 0, -1, 1)),
+    COVID.19.Knowledge.Staying.indoors.for.Self.tri = ifelse(COVID.19.Knowledge.Staying.indoors.for.Self == 0, 0, ifelse(COVID.19.Knowledge.Staying.indoors.for.Self < 0, -1, 1)),
+    COVID.19.Knowledge.Staying.indoors.for.Others.tri = ifelse(COVID.19.Knowledge.Staying.indoors.for.Others == 0, 0, ifelse(COVID.19.Knowledge.Staying.indoors.for.Others < 0, -1, 1)),
+    COVID.19.Knowledge.Spread.before.symptoms.tri = ifelse(COVID.19.Knowledge.Spread.before.symptoms == 0, 0, ifelse(COVID.19.Knowledge.Spread.before.symptoms < 0, -1, 1)),
+    COVID.19.Knowledge.Wearing.masks.tri = ifelse(COVID.19.Knowledge.Wearing.masks == 0, 0, ifelse(COVID.19.Knowledge.Wearing.masks < 0, -1, 1)),
+    COVID.19.VCI.COVID.19.Vax.Importance.tri = ifelse(COVID.19.VCI.COVID.19.Vax.Importance == 0, 0, ifelse(COVID.19.VCI.COVID.19.Vax.Importance < 0, -1, 1)),
+    COVID.19.VCI.COVID.19.Vax.Safety.tri = ifelse(COVID.19.VCI.COVID.19.Vax.Safety == 0, 0, ifelse(COVID.19.VCI.COVID.19.Vax.Safety < 0, -1, 1)),
+    COVID.19.VCI.COVID.19.Vax.Efficacy.tri = ifelse(COVID.19.VCI.COVID.19.Vax.Efficacy == 0, 0, ifelse(COVID.19.VCI.COVID.19.Vax.Efficacy < 0, -1, 1)),
+    COVID.19.VCI.COVID.19.Vax.benefits.outweigh.risks.tri = ifelse(COVID.19.VCI.COVID.19.Vax.benefits.outweigh.risks == 0, 0, ifelse(COVID.19.VCI.COVID.19.Vax.benefits.outweigh.risks < 0, -1, 1)),
+    COVID.19.VCI.COVID.19.Vax.Compatibility.tri = ifelse(COVID.19.VCI.COVID.19.Vax.Compatibility == 0, 0, ifelse(COVID.19.VCI.COVID.19.Vax.Compatibility < 0, -1, 1)),
+    COVID.19.VCI.Contract.via.COVID.19.Vax.tri = ifelse(COVID.19.VCI.Contract.via.COVID.19.Vax == 0, 0, ifelse(COVID.19.VCI.Contract.via.COVID.19.Vax < 0, -1, 1)),
+    General.VCI.Vax.Importance.tri = ifelse(General.VCI.Vax.Importance == 0, 0, ifelse(General.VCI.Vax.Importance < 0, -1, 1)),
+    General.VCI.Vax.Safety.tri = ifelse(General.VCI.Vax.Safety == 0, 0, ifelse(General.VCI.Vax.Safety < 0, -1, 1)),
+    General.VCI.Vax.Efficacy.tri = ifelse(General.VCI.Vax.Efficacy == 0, 0, ifelse(General.VCI.Vax.Efficacy < 0, -1, 1)),
+    General.VCI.Vax.Compatibility.tri = ifelse(General.VCI.Vax.Compatibility == 0, 0, ifelse(General.VCI.Vax.Compatibility < 0, -1, 1)),
+    
+    # Outcomes
+
+    ## Strict Decrease in Vaccine Intent
+    ## note that 1 is the first answer choice which is Yes, so a "decrease" in vaccine intent is actually an "increase" in the answer number choice
+    Vaccine.Intent.for.self..Decrease = (Vaccine.Intent.for.self..Post. > Vaccine.Intent.for.self..Pre.),
+    Vaccine.Intent.for.others..Decrease = (Vaccine.Intent.for.others..Post. > Vaccine.Intent.for.others..Pre.),
+    
+    ## Agreeing with Misinfo
+    Image.NumAgree = ((Image.1.Agreement > 0) + (Image.2.Agreement > 0) + (Image.3.Agreement > 0) + (Image.4.Agreement > 0) + (Image.5.Agreement > 0)),
+    Image.NumDontKnow = ((Image.1.Agreement == 0) + (Image.2.Agreement == 0) + (Image.3.Agreement == 0) + (Image.4.Agreement == 0) + (Image.5.Agreement == 0)),
+    Image.NumDisagree = (5 - Image.NumAgree - Image.NumDontKnow),
+    NumMisinfoBelief = Treatment*Image.NumAgree + (1-Treatment)*(Image.NumDisagree),
+    MisinfoBeliever = NumMisinfoBelief > 1,
+
+    ## Sharing the Misinfo
+    Image.NumShare = ((Image.1.Share > 0) + (Image.2.Share> 0) + (Image.3.Share > 0) + (Image.4.Share > 0) + (Image.5.Share > 0)),
+    Image.NumDontKnow = ((Image.1.Share == 0) + (Image.2.Share == 0) + (Image.3.Share == 0) + (Image.4.Share == 0) + (Image.5.Share == 0)),
+    Image.NumNotShare = (5 - Image.NumShare - Image.NumDontKnow),
+    NumMisinfoShare = Treatment*Image.NumShare + (1-Treatment)*(Image.NumNotShare),
+    MisinfoShare = NumMisinfoShare > 1,
+    
+    ## Trusting the Misinfo Source
+    Image.NumTrust = ((Image.1.Trust > 0) + (Image.2.Trust> 0) + (Image.3.Trust > 0) + (Image.4.Trust > 0) + (Image.5.Trust > 0)),
+    Image.NumDontKnow = ((Image.1.Trust == 0) + (Image.2.Trust == 0) + (Image.3.Trust == 0) + (Image.4.Trust == 0) + (Image.5.Trust == 0)),
+    Image.NumNotTrust = (5 - Image.NumTrust - Image.NumDontKnow),
+    NumMisinfoTrust = Treatment*Image.NumTrust + (1-Treatment)*(Image.NumNotTrust),
+    MisinfoTrust = NumMisinfoTrust > 1
+  )
+
+df_us_cleaned %>%
+  select(
+    z,
+    inv_z,
+    Treatment,
+    Shielding,
+    know.anyone.covid,
+    bad_covid_knowledge,
+    bad_covid_vax_trust,
+    bad_general_vax_trust,
+    covid_disrupt,
+    Vaccine.Intent.for.self..Decrease,
+    Vaccine.Intent.for.self..Post.,
+    Vaccine.Intent.for.self..Pre.,
+    Vaccine.Intent.for.others..Decrease,
+    Vaccine.Intent.for.others..Post.,
+    Vaccine.Intent.for.others..Pre.,
+    NumMisinfoBelief,
+    NumMisinfoShare,
+    NumMisinfoTrust
+  ) %>% head()
+
+# UK
+
+  df_uk_cleaned <- df_uk %>%
+  mutate(
+    Vaccine.Intent.for.self..Decrease = (
+      Vaccine.Intent.for.self..Post. > Vaccine.Intent.for.self..Pre. # note that 1 is the first answer choice which is Yes, so a "decrease" in vaccine intent is actually an "increase" in the answer number choice
+    ),
+    Vaccine.Intent.for.others..Decrease = (
+      Vaccine.Intent.for.others..Post. > Vaccine.Intent.for.others..Pre.
+    )
+  )
+
+
+
+```
+
+
+
+```{r}
+plot(
+  xBalance(
+    Treatment ~ Age + 
+      Gender + 
+      Education + 
+      Employment + 
+      Religion + 
+      Political + 
+      Ethnicity + 
+      Income,
+    data = df_us_cleaned
+  ),
+  main="US Control vs Treatment"
+)
+```
+```{r}
+plot(
+  xBalance(
+    Treatment ~ Age + 
+      Gender + 
+      Education + 
+      Employment + 
+      Religion + 
+      Political + 
+      Ethnicity + 
+      Income,
+    data = df_uk_cleaned
+  ),
+  main="UK Control vs Treatment"
+)
+```
+
+
+
+
+```{r}
+# Construct Propensity Score - Think about how to improve this by adding new variables
+
+# US
+df_us_cleaned$prop  <- glm(Treatment ~ Age + Gender + Education + Employment + 
+                             Religion + Political + Ethnicity + Income,
+                           family = binomial(link = "logit"), data =   df_us_cleaned)$fitted.values
+
+
+auc(df_us_cleaned$Treatment, df_us_cleaned$prop)
+
+#UK
+
+df_uk_cleaned$prop  <- glm(Treatment ~ Age + Gender + Education + Employment + 
+                             Religion + Political + Ethnicity + Income,
+                           family = binomial(link = "logit"), data =   df_uk_cleaned)$fitted.values
+
+auc(df_uk_cleaned$Treatment, df_uk_cleaned$prop)
+```
+```{r}
+#final_covariates propensity score
+
+df_us_cleaned$prop2  <- glm(Treatment ~ Age + Gender + Education + Employment + Religion + Political + Ethnicity + Income + know.anyone.covid + Shielding + bad_covid_knowledge + bad_covid_vax_trust + bad_general_vax_trust + covid_disrupt,
+                        family = binomial(link = "logit"), data =   df_us_cleaned)$fitted.values
+
+auc(df_us_cleaned$Treatment, df_us_cleaned$prop2)
+```
+
+
+
+
+
+```{r}
+# Investigation of US Propensity Score
+
+logreg <- glm(Treatment ~ Age + Gender + Education + Employment + 
+                Religion + Political + Ethnicity + Income,
+              family = binomial(link = "logit"), data =   df_us_cleaned)
+summary(logreg)
+```
+```{r}
+# Age Share - Treatment vs Control
+df_us_cleaned %>%
+  ggplot(aes(x = Age, , y = 1, fill = factor(Treatment))) +
+  geom_bar(position="fill", stat="identity") +
+  scale_fill_manual(values = c("blue","red"))
+```
+```{r}
+# Heterogeneous Treatment Effects by Age Group - T Test
+
+t.test(
+  filter(df_us_cleaned, Age > 2)$Vaccine.Intent.for.others..Decrease,
+  filter(df_us_cleaned, Age <= 2)$Vaccine.Intent.for.others..Decrease,
+  alternative = "less"
+)
+
+
+```
+
+```{r}
+summary(df_us_cleaned$prop)
+df_us_cleaned %>%
+  ggplot(aes(x = prop2, fill = factor(Treatment))) +
+  geom_density(alpha=0.6) +
+  scale_fill_manual(values = c("blue","red"))
+```
+```{r}
+summary(df_uk_cleaned$prop)
+df_uk_cleaned %>%
+  ggplot(aes(x = prop, fill = factor(Treatment))) +
+  geom_density(alpha=0.6) +
+  scale_fill_manual(values = c("blue","red"))
+```
+```{r}
+# Rebalance using mahalanobis distance
+df_us_short <- df_us_cleaned[c('Age', 'Gender', 'Education', 'Employment', 'Religion', 'Political', 'Ethnicity','Income', 'prop')]
+mat.1 <- mahal(df_us_cleaned$Treatment, df_us_short)
+ms.1 <- pairmatch(mat.1, data=df_us_cleaned)
+plot(xBalance(Treatment ~ Age + Gender + Education + Employment + 
+                Religion + Political + Ethnicity + Income + prop +  strata(ms.1)-1,data=df_us_cleaned))
+```
+
+```{r}
+# Rebalance using mahalanobis distance and caliper
+
+df_us_short <- df_us_cleaned[c('Age', 'Gender', 'Education', 'Employment', 'Religion', 'Political', 'Ethnicity','Income', 'prop')]
+mat.1 <- mahal(df_us_cleaned$Treatment, df_us_short)
+ms.1 <- pairmatch(mat.1, data=df_us_cleaned)
+plot(xBalance(Treatment ~ Age + Gender + Education + Employment + 
+                Religion + Political + Ethnicity + Income + prop + strata(ms.1)-1,data=df_us_cleaned))
+```
+
+```{r}
+# Rebalance using mahalanobis distance and propensity score and caliper - Think about which calipers to use
+
+mat.2 <- addcaliper(mat.1, z=df_us_cleaned$Treatment, p=df_us_cleaned$prop, caliper=0.1)
+ms.2 <- pairmatch(mat.2, data=df_us_cleaned)
+plot(xBalance(Treatment ~ Age + Gender + Education + Employment + Religion + Political + Ethnicity + Income + prop +strata(ms.2)-1,data=df_us_cleaned))
+```
+```{r}
+#Horvitz Thompson Estimator
+
+# US SELF
+N = nrow(df_us_cleaned)
+Z = df_us_cleaned$Treatment
+Y = df_us_cleaned$Vaccine.Intent.for.self..Decrease
+prop <- df_us_cleaned$prop
+
+t_hat_ht <- (1/N)*sum(Z*Y/prop - (1-Z)*Y/(1-prop))
+
+t_hat_ht
+```
+```{r}
+# US OTHERS
+N = nrow(df_us_cleaned)
+Z = df_us_cleaned$Treatment
+Y = df_us_cleaned$Vaccine.Intent.for.others..Decrease
+prop <- df_us_cleaned$prop
+
+t_hat_ht <- (1/N)*sum(Z*Y/prop - (1-Z)*Y/(1-prop))
+
+t_hat_ht
+```
+```{r}
+# UK SELF
+N = nrow(df_uk_cleaned)
+Z = df_uk_cleaned$Treatment
+Y = df_uk_cleaned$Vaccine.Intent.for.self..Decrease
+prop <- df_uk_cleaned$prop
+
+t_hat_ht <- (1/N)*sum(Z*Y/prop - (1-Z)*Y/(1-prop))
+
+t_hat_ht
+
+```
+```{r}
+# UK OTHERS
+N = nrow(df_uk_cleaned)
+Z = df_uk_cleaned$Treatment
+Y = df_uk_cleaned$Vaccine.Intent.for.others..Decrease
+prop <- df_uk_cleaned$prop
+
+t_hat_ht <- (1/N)*sum(Z*Y/prop - (1-Z)*Y/(1-prop))
+
+t_hat_ht
+```
+```{r}
+# Hajek Estimator
+
+# US SELF
+N = nrow(df_us_cleaned)
+Z = df_us_cleaned$Treatment
+Y = df_us_cleaned$Vaccine.Intent.for.self..Decrease
+prop <- df_us_cleaned$prop
+
+t_hat_hajek <- 1/sum(Z/prop)*sum(Z*Y/prop) - (1/sum((1-Z)/(1-prop)))*sum((1-Z)*Y/(1-prop))
+
+t_hat_hajek
+
+```
+```{r}
+# US OTHERS
+N = nrow(df_us_cleaned)
+Z = df_us_cleaned$Treatment
+Y = df_us_cleaned$Vaccine.Intent.for.others..Decrease
+prop <- df_us_cleaned$prop
+
+t_hat_hajek <- 1/sum(Z/prop)*sum(Z*Y/prop) - (1/sum((1-Z)/(1-prop)))*sum((1-Z)*Y/(1-prop))
+
+t_hat_hajek
+```
+```{r}
+# UK SELF
+N = nrow(df_us_cleaned)
+Z = df_uk_cleaned$Treatment
+Y = df_uk_cleaned$Vaccine.Intent.for.self..Decrease
+prop <- df_uk_cleaned$prop
+
+t_hat_hajek <- 1/sum(Z/prop)*sum(Z*Y/prop) - (1/sum((1-Z)/(1-prop)))*sum((1-Z)*Y/(1-prop))
+
+t_hat_hajek
+```
+```{r}
+# UK OTEHRS
+N = nrow(df_us_cleaned)
+Z = df_uk_cleaned$Treatment
+Y = df_uk_cleaned$Vaccine.Intent.for.others..Decrease
+prop <- df_uk_cleaned$prop
+
+t_hat_hajek <- 1/sum(Z/prop)*sum(Z*Y/prop) - (1/sum((1-Z)/(1-prop)))*sum((1-Z)*Y/(1-prop))
+
+t_hat_hajek
+```
+```{r}
+# Compute paper's original estimate
+# US SELF
+mean(filter(df_us_cleaned, df_us_cleaned$Treatment == 1)$Vaccine.Intent.for.self..Decrease)-mean(filter(df_us_cleaned, df_us_cleaned$Treatment == 0)$Vaccine.Intent.for.self..Decrease)
+
+```
+```{r}
+# US OTHERS
+mean(subset(df_us_cleaned, df_us_cleaned$Treatment == 1)$Vaccine.Intent.for.others..Decrease)- mean(subset(df_us_cleaned, df_us_cleaned$Treatment == 0)$Vaccine.Intent.for.others..Decrease)
+```
+```{r}
+# UK SELF
+mean(subset(df_uk_cleaned, df_uk_cleaned$Treatment == 1)$Vaccine.Intent.for.self..Decrease)- mean(subset(df_uk_cleaned, df_uk_cleaned$Treatment == 0)$Vaccine.Intent.for.self..Decrease)
+```
+
+```{r}
+# UK OTHERS
+mean(subset(df_uk_cleaned, df_uk_cleaned$Treatment == 1)$Vaccine.Intent.for.others..Decrease)- mean(subset(df_uk_cleaned, df_uk_cleaned$Treatment == 0)$Vaccine.Intent.for.others..Decrease)
+```
+
+```{r}
+# t-test with all variables of dataframe
+library(dplyr)
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+
+final_covariates_and_treat <- c(  'Age','Gender', 'Education', 'Employment', 'Religion', 'Political', 'Ethnicity', 'Income',
+'know.anyone.covid','Shielding','bad_covid_knowledge','bad_covid_vax_trust','bad_general_vax_trust','covid_disrupt', 'Treatment')
+df_us_cleaned.long <- df_us_cleaned[, final_covariates_and_treat]   %>%
+  pivot_longer(-Treatment, names_to = "variables", values_to = "value")
+
+stat.test <- df_us_cleaned.long %>%
+  group_by(variables) %>%
+  t_test(value ~ Treatment) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+stat.test[, c('variables', 'statistic', 'p.adj', 'p.adj.signif')]
+
+```
+
+
+```{r}
+# Compute Mahalanobis distance between treatment and control
+
+computeMahalanobis <- function(treatment.data, control.data) {
+  total.data <- rbind(treatment.data, control.data)
+  mean.treatment <- as.vector(colMeans(treatment.data))
+  mean.control <- as.vector(colMeans(control.data))
+  result <- mahalanobis(mean.treatment, mean.control, cov = cov(total.data))
+  
+  return(result)
+}
+
+simulate <- function(data) {
+  # Build Random Vector
+  ramdom.vector <- sample(c(0,1), replace=TRUE, size=nrow(data))
+  data$Treatment <- ramdom.vector
+  
+  # Filter dataframes
+  treatment_data = filter(data, Treatment == 1)
+  control_data = filter(data, Treatment == 0)
+  
+  # Only select the relevant covariates
+  treatment_data = treatment_data[, final_covariates]
+  control_data = control_data[, final_covariates]
+  
+  distance <- computeMahalanobis(treatment_data, control_data)
+  
+  return(distance)
+}
+
+result <- c()
+
+for(i in 1:10000) {
+  result[i] <- simulate(df_us_cleaned)
+}
+
+mean(result > 0.4159985)
+hist(result)
+
+```
+
+```{r}
+for(i in 1:10000) {
+  result[i] <- simulate(df_uk_cleaned)
+}
+
+df_uk_cleaned[, final_covariates]
+final_covariates
+```
+
+
+```{r}
+treatment_data = filter(df_us_cleaned, Treatment == 1)
+control_data = filter(df_us_cleaned, Treatment == 0)
+
+treatment_data = treatment_data[, final_covariates]
+control_data = control_data[, final_covariates]
+
+computeMahalanobis(treatment_data, control_data)
+```
+
+
+```{r}
+total.data <- df_us_cleaned[, final_covariates]
+treatment.data <- filter(df_us_cleaned, Treatment == 1)
+  mean.treatment <- as.vector(colMeans(treatment.data[, final_covariates], na.rm = TRUE ))
+  control.data <- filter(df_us_cleaned, Treatment == 0)
+  mean.control <- as.vector(colMeans(control.data[, final_covariates], na.rm = TRUE))
+  mahalanobis(mean.treatment, mean.control, cov = cov(total.data))
+  
+```
+
+```{r}
+library(rstatix)
+df_us_cleaned.long <- select_if(df_us_cleaned, is.numeric)   %>%
+  pivot_longer(-Treatment, names_to = "variables", values_to = "value")
+
+stat.test <- df_us_cleaned.long %>%
+  group_by(variables) %>%
+  t_test(value ~ Treatment) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+  stat.test[, c('variables', 'statistic', 'p.adj', 'p.adj.signif')]
+```
+
+
+```{r}
+``
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
